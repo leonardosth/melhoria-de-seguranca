@@ -100,6 +100,36 @@ const totalOccurrences = document.querySelector("#totalOccurrences");
 const criticalOccurrences = document.querySelector("#criticalOccurrences");
 const lastUpdate = document.querySelector("#lastUpdate");
 
+// DOM Elements for RBAC
+const quickActionsSection = document.querySelector("#quickActionsSection");
+const searchSection = document.querySelector("#searchSection");
+const occurrencesSection = document.querySelector("#occurrencesSection");
+const logsSection = document.querySelector("#logsSection");
+
+/**
+ * SEGURANÇA: Função para escapar caracteres HTML e evitar XSS (Cross-Site Scripting)
+ */
+function sanitize(text) {
+  if (typeof text !== "string") return text;
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+/**
+ * SEGURANÇA: Função para mascarar dados sensíveis
+ */
+function maskCpf(cpf) {
+  if (!cpf) return "";
+  return cpf.replace(/(\d{3})\.(\d{3})\.(\d{3})-(\d{2})/, "$1.***.***-$4");
+}
+
+function maskEmail(email) {
+  if (!email) return "";
+  const [user, domain] = email.split("@");
+  return `${user[0]}***@${domain}`;
+}
+
 function boot() {
   if (!localStorage.getItem(STORAGE_KEYS.occurrences)) {
     localStorage.setItem(STORAGE_KEYS.occurrences, JSON.stringify(INITIAL_OCCURRENCES));
@@ -158,7 +188,7 @@ function writeLog(action, detail) {
     user: session ? session.email : "anonimo",
     role: session ? session.role : "SEM_SESSAO",
     action,
-    detail
+    detail: sanitize(detail) // Higienização de logs
   });
 
   saveAuditLogs(logs);
@@ -172,6 +202,9 @@ function showLogin() {
   sessionBadge.classList.add("muted");
 }
 
+/**
+ * SEGURANÇA: Implementação de RBAC (Role-Based Access Control)
+ */
 function showApp(user) {
   loginView.classList.add("hidden");
   appView.classList.remove("hidden");
@@ -183,6 +216,27 @@ function showApp(user) {
   currentUserName.textContent = user.name;
   currentUserDetails.textContent = `${user.email} | Perfil: ${user.role}`;
   roleSelect.value = user.role;
+
+  // Controle de Permissões
+  if (user.role === "ALUNO") {
+    quickActionsSection.classList.add("hidden");
+    searchSection.classList.add("hidden");
+    occurrencesSection.classList.add("hidden");
+    logsSection.classList.add("hidden");
+    roleSelect.parentElement.classList.add("hidden"); // Esconde seletor de perfil para não permitir troca fácil
+  } else if (user.role === "PROFESSOR") {
+    quickActionsSection.classList.add("hidden");
+    searchSection.classList.remove("hidden");
+    occurrencesSection.classList.remove("hidden");
+    logsSection.classList.add("hidden");
+    roleSelect.parentElement.classList.add("hidden"); // Esconde seletor de perfil
+  } else if (user.role === "ADMIN") {
+    quickActionsSection.classList.remove("hidden");
+    searchSection.classList.remove("hidden");
+    occurrencesSection.classList.remove("hidden");
+    logsSection.classList.remove("hidden");
+    roleSelect.parentElement.classList.remove("hidden"); // Admin pode trocar de perfil para teste
+  }
 
   render();
 }
@@ -211,7 +265,8 @@ function logout() {
 function changeRole(newRole) {
   const session = getSession();
 
-  if (!session) {
+  if (!session || session.role !== "ADMIN") {
+    alert("Apenas administradores podem alterar perfis dinamicamente.");
     return;
   }
 
@@ -226,17 +281,18 @@ function createOccurrence(event) {
 
   const session = getSession();
 
+  // SEGURANÇA: Higienização de entradas (XSS Prevention)
   const occurrence = {
     id: `OC-${Math.floor(Math.random() * 9000) + 1000}`,
-    studentName: document.querySelector("#studentName").value,
-    studentId: document.querySelector("#studentId").value,
-    studentCpf: document.querySelector("#studentCpf").value,
-    studentEmail: document.querySelector("#studentEmail").value,
-    studentPhone: document.querySelector("#studentPhone").value,
-    category: document.querySelector("#category").value,
-    priority: document.querySelector("#priority").value,
-    description: document.querySelector("#description").value,
-    internalNote: document.querySelector("#internalNote").value,
+    studentName: sanitize(document.querySelector("#studentName").value),
+    studentId: sanitize(document.querySelector("#studentId").value),
+    studentCpf: sanitize(document.querySelector("#studentCpf").value),
+    studentEmail: sanitize(document.querySelector("#studentEmail").value),
+    studentPhone: sanitize(document.querySelector("#studentPhone").value),
+    category: sanitize(document.querySelector("#category").value),
+    priority: sanitize(document.querySelector("#priority").value),
+    description: sanitize(document.querySelector("#description").value),
+    internalNote: sanitize(document.querySelector("#internalNote").value),
     privacyAck: document.querySelector("#privacyAck").checked,
     status: "Aberta",
     createdBy: session ? session.email : "desconhecido",
@@ -249,7 +305,7 @@ function createOccurrence(event) {
 
   writeLog(
     "OCORRENCIA_CRIADA",
-    `Criada ocorrência ${occurrence.id} para ${occurrence.studentName} / ${occurrence.studentCpf}. Descrição: ${occurrence.description}`
+    `Criada ocorrência ${occurrence.id} para ${occurrence.studentName}.`
   );
 
   occurrenceForm.reset();
@@ -257,6 +313,15 @@ function createOccurrence(event) {
 }
 
 function deleteOccurrence(id) {
+  const session = getSession();
+
+  // SEGURANÇA: Autorização baseada em cargo (RBAC check no código)
+  if (!session || session.role !== "ADMIN") {
+    alert("Ação negada: Apenas administradores podem excluir registros.");
+    writeLog("ACESSO_NEGADO", `Tentativa de exclusão da ocorrência ${id} por ${session?.email}`);
+    return;
+  }
+
   const occurrences = getOccurrences();
   const occurrence = occurrences.find((item) => item.id === id);
   const updated = occurrences.filter((item) => item.id !== id);
@@ -267,6 +332,14 @@ function deleteOccurrence(id) {
 }
 
 function changeStatus(id, status) {
+  const session = getSession();
+
+  // SEGURANÇA: Professor e Admin podem alterar status. Aluno não.
+  if (!session || session.role === "ALUNO") {
+    alert("Ação negada: Alunos não podem alterar o status de ocorrências.");
+    return;
+  }
+
   const occurrences = getOccurrences();
   const occurrence = occurrences.find((item) => item.id === id);
 
@@ -283,6 +356,14 @@ function changeStatus(id, status) {
 }
 
 function exportEverything() {
+  const session = getSession();
+
+  // SEGURANÇA: Apenas Admin pode exportar todos os dados
+  if (!session || session.role !== "ADMIN") {
+    alert("Ação negada: Apenas administradores podem exportar a base completa.");
+    return;
+  }
+
   const payload = {
     exportedAt: new Date().toISOString(),
     exportedBy: getSession(),
@@ -310,11 +391,25 @@ function exportEverything() {
 }
 
 function clearLogs() {
+  const session = getSession();
+
+  if (!session || session.role !== "ADMIN") {
+    alert("Ação negada: Apenas administradores podem limpar os logs.");
+    return;
+  }
+
   saveAuditLogs([]);
   render();
 }
 
 function resetData() {
+  const session = getSession();
+
+  if (!session || session.role !== "ADMIN") {
+    alert("Ação negada: Apenas administradores podem restaurar a base inicial.");
+    return;
+  }
+
   localStorage.setItem(STORAGE_KEYS.occurrences, JSON.stringify(INITIAL_OCCURRENCES));
   localStorage.setItem(STORAGE_KEYS.audit, JSON.stringify([]));
   localStorage.removeItem(STORAGE_KEYS.session);
@@ -324,6 +419,9 @@ function resetData() {
 function render() {
   const term = searchInput.value.toLowerCase();
   const occurrences = getOccurrences();
+  const session = getSession();
+  
+  if (!session) return;
 
   const filtered = occurrences.filter((item) => {
     const content = JSON.stringify(item).toLowerCase();
@@ -334,15 +432,20 @@ function render() {
   criticalOccurrences.textContent = occurrences.filter((item) => item.priority === "Crítica").length;
   lastUpdate.textContent = `Atualizado em ${new Date().toLocaleTimeString("pt-BR")}`;
 
-  occurrencesTable.innerHTML = filtered.map((item) => `
+  occurrencesTable.innerHTML = filtered.map((item) => {
+    // SEGURANÇA: Mascaramento de dados se não for Admin
+    const displayCpf = session.role === "ADMIN" ? item.studentCpf : maskCpf(item.studentCpf);
+    const displayEmail = session.role === "ADMIN" ? item.studentEmail : maskEmail(item.studentEmail);
+
+    return `
     <tr>
       <td>
         <strong>${item.studentName}</strong><br />
         <span class="muted-text">${item.studentId}</span>
       </td>
-      <td>${item.studentCpf}</td>
+      <td>${displayCpf}</td>
       <td>
-        ${item.studentEmail}<br />
+        ${displayEmail}<br />
         ${item.studentPhone}
       </td>
       <td>${item.category}</td>
@@ -356,11 +459,11 @@ function render() {
         <div class="row-actions">
           <button class="btn secondary" onclick="changeStatus('${item.id}', 'Em análise')">Em análise</button>
           <button class="btn secondary" onclick="changeStatus('${item.id}', 'Resolvida')">Resolver</button>
-          <button class="btn danger" onclick="deleteOccurrence('${item.id}')">Excluir</button>
+          ${session.role === "ADMIN" ? `<button class="btn danger" onclick="deleteOccurrence('${item.id}')">Excluir</button>` : ""}
         </div>
       </td>
     </tr>
-  `).join("");
+  `}).join("");
 
   const logs = getAuditLogs();
 
